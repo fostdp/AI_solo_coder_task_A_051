@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import TombModel from './TombModel';
-import SaltDamageOverlay from './SaltDamageOverlay';
+import SaltTexture from './SaltTexture';
 import MigrationArrows from './MigrationArrows';
 import FlowLines from './FlowLines';
 import SensorMarkers from './SensorMarkers';
@@ -110,6 +110,7 @@ export default function TombScene3D({
   showArrows = true,
   showSensors = true,
   showWireframe = false,
+  useFlowMode = false,
 }: TombScene3DProps) {
   const [time, setTime] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -135,9 +136,8 @@ export default function TombScene3D({
         <TombModel chamber={chamber} showWireframe={showWireframe} />
         
         {showSaltDamage && (
-          <SaltDamageOverlay
+          <SaltTexture
             chamberWidth={width}
-            chamberHeight={height}
             chamberLength={length}
             saltData={saltData}
             time={time}
@@ -145,11 +145,22 @@ export default function TombScene3D({
         )}
         
         {showArrows && analysisResults.length > 0 && (
-          <MigrationArrows
-            analysisResults={analysisResults}
-            time={time}
-            scale={1}
-          />
+          useFlowMode ? (
+            <FlowLines
+              analysisResults={analysisResults}
+              time={time}
+              particlesPerResult={20}
+              showTrails={false}
+              speedScale={0.8}
+              lineLength={0.5}
+            />
+          ) : (
+            <MigrationArrows
+              analysisResults={analysisResults}
+              time={time}
+              scale={1}
+            />
+          )
         )}
         
         {showSensors && (
