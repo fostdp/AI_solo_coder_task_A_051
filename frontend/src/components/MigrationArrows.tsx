@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { arrowVertexShader, arrowFragmentShader } from '@/shaders/crystalShader';
@@ -104,11 +104,7 @@ export default function MigrationArrows({ analysisResults, time, scale = 1 }: Mi
     };
   }, [directionData, scaleData, phaseData, arrowCount, scale]);
   
-  useFrame(() => {
-    if (arrowMaterial) {
-      arrowMaterial.uniforms.uTime.value = time;
-    }
-    
+  useEffect(() => {
     if (instancedMeshRef.current) {
       const mesh = instancedMeshRef.current;
       for (let i = 0; i < arrowCount; i++) {
@@ -117,6 +113,12 @@ export default function MigrationArrows({ analysisResults, time, scale = 1 }: Mi
         }
       }
       mesh.instanceMatrix.needsUpdate = true;
+    }
+  }, [instanceMatrices, arrowCount]);
+
+  useFrame(() => {
+    if (arrowMaterial) {
+      arrowMaterial.uniforms.uTime.value = time;
     }
   });
   
