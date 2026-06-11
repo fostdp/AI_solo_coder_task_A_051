@@ -16,6 +16,13 @@ class DTUClient {
     this.retryDelay = options.retryDelay || 2000;
     this.timeout = options.timeout || 10000;
 
+    this.packetLossBase = options.packetLossRate || 0.02;
+    this.packetLossVariation = options.packetLossVariation || 0.03;
+    this.packetLossBurstProbability = options.packetLossBurstProbability || 0.05;
+    this.packetLossBurstRate = options.packetLossBurstRate || 0.3;
+    this._isInBurst = false;
+    this._burstRemaining = 0;
+
     this.logger = winston.createLogger({
       level: 'info',
       format: winston.format.combine(
@@ -61,6 +68,26 @@ class DTUClient {
 
   async report(data, retryCount = 0) {
     this.stats.totalRequests++;
+
+    if (this._shouldDropPacket()) {
+      this.stats.failedRequests++;
+      this.logger.warn(`[${data.deviceId}] 模拟4G丢包 - 当前丢包率: ${(this._getCurrentLossRate() * 100).toFixed(1)}%`, {
+        deviceId: data.deviceId,
+        simulatedPacketLoss: true
+      });
+
+      if (retryCount < this.maxRetries) {
+        this.stats.retries++;
+        await this._delay(this.retryDelay * (retryCount + 1));
+        return this.report(data, retryCount + 1);
+      }
+
+      return {
+        success: false,
+        error: 'SIMULATED_PACKET_LOSS',
+        statusCode: 0
+      };
+    }
 
     try {
       const response = await this.httpClient.post(this.endpoint, data);
@@ -199,6 +226,34 @@ class DTUClient {
 
   _delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  _getCurrentLossRate() {
+    const hourOfDay = new Date().getHours();
+    const timeOfDayFactor = Math.sin((hourOfDay - 6) / 24 * Math.PI * 2) * 0.5 + 0.5;
+    let rate = this.packetLossBase + this.packetLossVariation * timeOfDayFactor;
+
+    if (this._isInBurst) {
+      rate = this.packetLossBurstRate;
+      this._burstRemaining--;
+      if (this._burstRemaining <= 0) {
+        this._isInBurst = false;
+        this.logger.info('4G信号恢复 - 丢包突发结束');
+      }
+    } else if (Math.random() < this.packetLossBurstProbability) {
+      this._isInBurst = true;
+      this._burstRemaining = Math.floor(Math.random() * 5) + 2;
+      this.logger.warn(`4G信号恶化 - 丢包突发开始 (预计持续 ${this._burstRemaining} 次上报)`);
+      rate = this.packetLossBurstRate;
+      this._burstRemaining--;
+    }
+
+    return Math.min(rate, 1.0);
+  }
+
+  _shouldDropPacket() {
+    const rate = this._getCurrentLossRate();
+    return Math.random() < rate;
   }
 }
 
