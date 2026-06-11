@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS salt_damage.salt_data (
     `position_y` Float64 COMMENT 'Y坐标',
     `position_z` Float64 COMMENT 'Z坐标'
 ) ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(timestamp)
+PARTITION BY toYYYYMM(timestamp)
 ORDER BY (tomb_id, device_id, timestamp)
 TTL timestamp + INTERVAL 5 YEAR
 COMMENT '盐离子监测数据表';
