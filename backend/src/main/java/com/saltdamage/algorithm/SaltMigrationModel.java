@@ -1,9 +1,13 @@
 package com.saltdamage.algorithm;
 
+import com.saltdamage.algorithm.util.PorosityGrid;
 import com.saltdamage.algorithm.util.Vector3D;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 盐分运移模型
@@ -336,5 +340,306 @@ public class SaltMigrationModel {
         // 特征粒径（细砂）
         double d_p = 1.0e-4;
         return density * Math.abs(velocity) * d_p / viscosity;
+    }
+
+    // =========================================================================
+    // 非均质孔隙度模型（基于CT扫描孔隙度分布）
+    // =========================================================================
+
+    /**
+     * 基于非均质孔隙度网格计算单点盐分运移速度
+     *
+     * 与均质版本的核心区别：
+     * 1. 渗透率 k 不是常数，而是由当地孔隙度通过 Kozeny-Carman 方程逐点计算
+     * 2. 扩散系数 D 同样随当地孔隙度变化
+     * 3. 考虑孔隙迂曲度的空间分布对运移路径的影响
+     *
+     * 适用场景：
+     * - 墓葬壁画多层结构（地仗层/石灰层/颜料层）
+     * - 毛细上升带孔隙度随高度递减
+     * - CT扫描揭示的非均质孔隙分布
+     *
+     * @param concentrationGrid 浓度网格，单位: mol/m³
+     * @param pressureGrid 压力网格，单位: Pa
+     * @param porosityGrid 孔隙度网格（CT扫描分布）
+     * @param viscosity 流体粘度，单位: Pa·s，为0时使用默认值
+     * @param diffusionCoeff 自由溶液扩散系数，单位: m²/s，为0时使用默认值
+     * @param x 计算点的x坐标索引
+     * @param y 计算点的y坐标索引
+     * @return 盐分运移速度向量，单位: m/s
+     * @throws IllegalArgumentException 参数无效时抛出
+     */
+    public Vector3D calculateMigrationVelocityHeterogeneous(
+            double[][] concentrationGrid,
+            double[][] pressureGrid,
+            PorosityGrid porosityGrid,
+            double viscosity,
+            double diffusionCoeff,
+            int x, int y) {
+
+        // ==================== 参数校验 ====================
+        validateInputParameters(concentrationGrid, pressureGrid, x, y,
+                porosityGrid.getDeltaX(), porosityGrid.getDeltaY());
+
+        double actualViscosity = viscosity > 0 ? viscosity : defaultViscosity;
+        double actualDiffusionCoeff = diffusionCoeff > 0 ? diffusionCoeff : defaultDiffusionCoeff;
+
+        // ==================== 非均质参数计算（逐点） ====================
+
+        // 当地孔隙度
+        double localPorosity = porosityGrid.getPorosity(x, y);
+
+        // 当地有效渗透率（Kozeny-Carman方程，使用当地孔隙度）
+        double localPermeability = porosityGrid.getPermeability(x, y, KOZENY_CONSTANT, 1.0e-4);
+
+        // 当地有效扩散系数（考虑当地孔隙度和迂曲度）
+        double localDiffusion = porosityGrid.getEffectiveDiffusion(x, y, actualDiffusionCoeff);
+
+        log.debug("位置({}, {}): 孔隙度={}, 渗透率={} m², 有效扩散={} m²/s",
+                x, y, localPorosity, localPermeability, localDiffusion);
+
+        // ==================== 梯度计算 ====================
+        Vector3D pressureGradient = calculateGradient(pressureGrid, x, y,
+                porosityGrid.getDeltaX(), porosityGrid.getDeltaY());
+
+        Vector3D concentrationGradient = calculateGradient(concentrationGrid, x, y,
+                porosityGrid.getDeltaX(), porosityGrid.getDeltaY());
+
+        // ==================== 运移速度计算（非均质版本） ====================
+
+        // 对流速度：使用当地渗透率
+        double convectionCoeff = -localPermeability / actualViscosity;
+        Vector3D convectionVelocity = pressureGradient.multiply(convectionCoeff);
+
+        // 扩散速度：使用当地有效扩散系数
+        Vector3D diffusionVelocity = concentrationGradient.multiply(localDiffusion);
+
+        // 总速度
+        Vector3D totalVelocity = convectionVelocity.add(diffusionVelocity);
+
+        log.debug("非均质模型 - 位置({}, {}): 对流速度={}, 扩散速度={}, 总速度={}",
+                x, y, convectionVelocity, diffusionVelocity, totalVelocity);
+
+        return totalVelocity;
+    }
+
+    /**
+     * 计算整个网格的盐分运移速度场（非均质模型）
+     *
+     * @param concentrationGrid 浓度网格
+     * @param pressureGrid 压力网格
+     * @param porosityGrid 孔隙度网格
+     * @param viscosity 流体粘度
+     * @param diffusionCoeff 扩散系数
+     * @return 速度场二维数组，每个元素为速度向量
+     */
+    public Vector3D[][] calculateVelocityFieldHeterogeneous(
+            double[][] concentrationGrid,
+            double[][] pressureGrid,
+            PorosityGrid porosityGrid,
+            double viscosity,
+            double diffusionCoeff) {
+
+        int rows = porosityGrid.getRows();
+        int cols = porosityGrid.getCols();
+        Vector3D[][] velocityField = new Vector3D[rows][cols];
+
+        for (int y = 0; y < rows; y++) {
+            for (int x = 0; x < cols; x++) {
+                velocityField[y][x] = calculateMigrationVelocityHeterogeneous(
+                        concentrationGrid, pressureGrid, porosityGrid,
+                        viscosity, diffusionCoeff, x, y);
+            }
+        }
+
+        return velocityField;
+    }
+
+    /**
+     * 计算盐分运移路径追踪（流线追踪，非均质模型）
+     *
+     * 使用四阶 Runge-Kutta 方法追踪盐粒从起点的运移路径。
+     * 适用于可视化盐分从污染源的扩散路径。
+     *
+     * @param concentrationGrid 浓度网格
+     * @param pressureGrid 压力网格
+     * @param porosityGrid 孔隙度网格
+     * @param startX 起点x索引
+     * @param startY 起点y索引
+     * @param numSteps 追踪步数
+     * @param timeStep 时间步长，单位: s
+     * @param viscosity 流体粘度
+     * @param diffusionCoeff 扩散系数
+     * @return 路径点列表（坐标索引）
+     */
+    public List<double[]> traceMigrationPath(
+            double[][] concentrationGrid,
+            double[][] pressureGrid,
+            PorosityGrid porosityGrid,
+            int startX, int startY,
+            int numSteps, double timeStep,
+            double viscosity, double diffusionCoeff) {
+
+        List<double[]> path = new ArrayList<>();
+
+        // 初始位置（连续坐标，非网格索引）
+        double posX = startX * porosityGrid.getDeltaX();
+        double posY = startY * porosityGrid.getDeltaY();
+
+        path.add(new double[]{posX, posY});
+
+        double deltaX = porosityGrid.getDeltaX();
+        double deltaY = porosityGrid.getDeltaY();
+        int rows = porosityGrid.getRows();
+        int cols = porosityGrid.getCols();
+
+        for (int step = 0; step < numSteps; step++) {
+            // 双线性插值获取当前位置的速度
+            Vector3D velocity = interpolateVelocity(
+                    concentrationGrid, pressureGrid, porosityGrid,
+                    posX, posY, viscosity, diffusionCoeff);
+
+            // 欧拉前进（简化版本，可扩展为 RK4）
+            posX += velocity.getX() * timeStep;
+            posY += velocity.getY() * timeStep;
+
+            // 边界检查
+            if (posX < 0 || posX >= (cols - 1) * deltaX ||
+                    posY < 0 || posY >= (rows - 1) * deltaY) {
+                break;
+            }
+
+            path.add(new double[]{posX, posY});
+        }
+
+        return path;
+    }
+
+    /**
+     * 双线性插值获取任意位置的运移速度（非均质模型）
+     */
+    private Vector3D interpolateVelocity(
+            double[][] concentrationGrid,
+            double[][] pressureGrid,
+            PorosityGrid porosityGrid,
+            double posX, double posY,
+            double viscosity, double diffusionCoeff) {
+
+        double deltaX = porosityGrid.getDeltaX();
+        double deltaY = porosityGrid.getDeltaY();
+
+        // 计算网格索引
+        int x0 = (int) Math.floor(posX / deltaX);
+        int y0 = (int) Math.floor(posY / deltaY);
+        int x1 = x0 + 1;
+        int y1 = y0 + 1;
+
+        x0 = Math.max(0, Math.min(x0, porosityGrid.getCols() - 2));
+        y0 = Math.max(0, Math.min(y0, porosityGrid.getRows() - 2));
+        x1 = x0 + 1;
+        y1 = y0 + 1;
+
+        // 计算插值权重
+        double wx = (posX - x0 * deltaX) / deltaX;
+        double wy = (posY - y0 * deltaY) / deltaY;
+
+        // 获取四个角点的速度
+        Vector3D v00 = calculateMigrationVelocityHeterogeneous(
+                concentrationGrid, pressureGrid, porosityGrid,
+                viscosity, diffusionCoeff, x0, y0);
+        Vector3D v10 = calculateMigrationVelocityHeterogeneous(
+                concentrationGrid, pressureGrid, porosityGrid,
+                viscosity, diffusionCoeff, x1, y0);
+        Vector3D v01 = calculateMigrationVelocityHeterogeneous(
+                concentrationGrid, pressureGrid, porosityGrid,
+                viscosity, diffusionCoeff, x0, y1);
+        Vector3D v11 = calculateMigrationVelocityHeterogeneous(
+                concentrationGrid, pressureGrid, porosityGrid,
+                viscosity, diffusionCoeff, x1, y1);
+
+        // 双线性插值
+        double vx = v00.getX() * (1 - wx) * (1 - wy) +
+                v10.getX() * wx * (1 - wy) +
+                v01.getX() * (1 - wx) * wy +
+                v11.getX() * wx * wy;
+
+        double vy = v00.getY() * (1 - wx) * (1 - wy) +
+                v10.getY() * wx * (1 - wy) +
+                v01.getY() * (1 - wx) * wy +
+                v11.getY() * wx * wy;
+
+        return Vector3D.of(vx, vy, 0);
+    }
+
+    /**
+     * 计算非均质模型与均质模型的速度偏差
+     *
+     * 用于量化孔隙非均质性对盐分运移预测的影响程度。
+     * 偏差越大，说明均质模型的预测误差越大。
+     *
+     * @param concentrationGrid 浓度网格
+     * @param pressureGrid 压力网格
+     * @param porosityGrid 孔隙度网格
+     * @param viscosity 流体粘度
+     * @param diffusionCoeff 扩散系数
+     * @return 偏差统计 [平均偏差%, 最大偏差%, 最小偏差%]
+     */
+    public double[] calculateHeterogeneityBias(
+            double[][] concentrationGrid,
+            double[][] pressureGrid,
+            PorosityGrid porosityGrid,
+            double viscosity,
+            double diffusionCoeff) {
+
+        int rows = porosityGrid.getRows();
+        int cols = porosityGrid.getCols();
+
+        // 计算平均孔隙度（作为均质模型的等效孔隙度）
+        double avgPorosity = 0;
+        for (int y = 0; y < rows; y++) {
+            for (int x = 0; x < cols; x++) {
+                avgPorosity += porosityGrid.getPorosity(x, y);
+            }
+        }
+        avgPorosity /= (rows * cols);
+
+        double totalBias = 0;
+        double maxBias = 0;
+        double minBias = Double.MAX_VALUE;
+        int count = 0;
+
+        for (int y = 0; y < rows; y++) {
+            for (int x = 0; x < cols; x++) {
+                // 均质模型速度
+                Vector3D vHomogeneous = calculateMigrationVelocity(
+                        concentrationGrid, pressureGrid,
+                        avgPorosity, 0, viscosity, diffusionCoeff,
+                        x, y, porosityGrid.getDeltaX(), porosityGrid.getDeltaY());
+
+                // 非均质模型速度
+                Vector3D vHeterogeneous = calculateMigrationVelocityHeterogeneous(
+                        concentrationGrid, pressureGrid, porosityGrid,
+                        viscosity, diffusionCoeff, x, y);
+
+                double speedHomo = vHomogeneous.length();
+                double speedHetero = vHeterogeneous.length();
+
+                if (speedHomo > 1e-15) {
+                    double bias = Math.abs(speedHetero - speedHomo) / speedHomo * 100;
+                    totalBias += bias;
+                    maxBias = Math.max(maxBias, bias);
+                    minBias = Math.min(minBias, bias);
+                    count++;
+                }
+            }
+        }
+
+        double avgBias = count > 0 ? totalBias / count : 0;
+        if (minBias == Double.MAX_VALUE) minBias = 0;
+
+        log.info("孔隙非均质性偏差统计: 平均={:.2f}%, 最大={:.2f}%, 最小={:.2f}%",
+                avgBias, maxBias, minBias);
+
+        return new double[]{avgBias, maxBias, minBias};
     }
 }
