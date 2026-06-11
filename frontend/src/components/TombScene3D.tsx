@@ -5,6 +5,7 @@ import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import TombModel from './TombModel';
 import SaltDamageOverlay from './SaltDamageOverlay';
 import MigrationArrows from './MigrationArrows';
+import FlowLines from './FlowLines';
 import SensorMarkers from './SensorMarkers';
 import { Chamber, Device, SaltData, EnvData, AnalysisResult } from '@/types';
 
@@ -19,6 +20,8 @@ interface TombScene3DProps {
   showArrows?: boolean;
   showSensors?: boolean;
   showWireframe?: boolean;
+  useFlowMode?: boolean;
+  particlesPerResult?: number;
 }
 
 function SceneLighting() {
