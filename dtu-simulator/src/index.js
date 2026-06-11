@@ -38,6 +38,11 @@ program
   .option('--max-retries <count>', '失败重试次数', '3')
   .option('--packet-loss-rate <rate>', '基础丢包率 (0~1)', '0.02')
   .option('--packet-loss-variation <rate>', '丢包率波动幅度 (0~1)', '0.03')
+  .option('--high-salt-events <enabled>', '高盐事件注入: true/false', 'true')
+  .option('--high-salt-probability <rate>', '高盐事件日均概率 (0~1)', '0.08')
+  .option('--high-salt-multiplier <n>', '高盐事件强度倍数', '5')
+  .option('--high-salt-duration <hours>', '高盐事件持续时长', '6')
+  .option('--trigger-event', '启动时立即触发一次高盐事件')
   .option('--list-devices', '列出所有设备配置')
   .option('--test-report', '测试单次上报后退出');
 
@@ -70,8 +75,24 @@ async function main() {
     reportIntervalHours: parseFloat(options.interval),
     speedMultiplier: parseFloat(options.speed),
     startTime: options.startTime,
-    endTime: options.endTime
+    endTime: options.endTime,
+    highSaltEvents: options.highSaltEvents === 'true',
+    highSaltEventProbability: parseFloat(options.highSaltProbability),
+    highSaltMultiplier: parseFloat(options.highSaltMultiplier),
+    highSaltDurationHours: parseFloat(options.highSaltDuration)
   });
+
+  if (options.triggerEvent) {
+    setTimeout(() => {
+      const event = scheduler.highSaltInjector.triggerEvent({
+        type: 'manual',
+        description: '启动时手动注入的高盐事件',
+        multiplier: parseFloat(options.highSaltMultiplier),
+        durationHours: parseFloat(options.highSaltDuration)
+      });
+      logger.info(`🚀 已手动触发高盐事件: ${event.id}`);
+    }, 2000);
+  }
 
   setupGracefulShutdown(scheduler);
 
