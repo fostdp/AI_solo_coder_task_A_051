@@ -9,6 +9,7 @@ const { CronJob } = require('cron');
 const winston = require('winston');
 const SaltDataGenerator = require('../generator/saltDataGenerator');
 const EnvDataGenerator = require('../generator/envDataGenerator');
+const HighSaltEventInjector = require('../generator/highSaltEventInjector');
 const DTUClient = require('../client/DTUClient');
 const { saltIonDevices, envDevices } = require('../config/devices');
 
@@ -17,6 +18,17 @@ class ReportScheduler {
     this.dtuClient = options.dtuClient || new DTUClient(options.clientOptions);
     this.saltGenerator = new SaltDataGenerator();
     this.envGenerator = new EnvDataGenerator();
+
+    this.highSaltInjector = new HighSaltEventInjector({
+      enabled: options.highSaltEvents !== false,
+      eventProbabilityPerDay: options.highSaltEventProbability || 0.08,
+      defaultMultiplier: options.highSaltMultiplier || 5,
+      defaultDurationHours: options.highSaltDurationHours || 6,
+      targetIons: ['so4_2_minus', 'na_plus'],
+      affectedRatio: 0.7,
+      rampUpHours: 1,
+      rampDownHours: 1
+    });
 
     this.reportIntervalHours = options.reportIntervalHours || 2;
     this.speedMultiplier = options.speedMultiplier || 1;
@@ -57,6 +69,13 @@ class ReportScheduler {
     this.logger.info(`  - 微环境传感器: ${envDevices.length}台`);
     this.logger.info(`上报间隔: ${this.reportIntervalHours}小时`);
     this.logger.info(`服务地址: ${this.dtuClient.baseUrl}${this.dtuClient.endpoint}`);
+    this.logger.info(`高盐事件注入: ${this.highSaltInjector.enabled ? '开启' : '关闭'}`);
+    if (this.highSaltInjector.enabled) {
+      this.logger.info(`  - 日均概率: ${this.highSaltInjector.eventProbabilityPerDay * 100}%`);
+      this.logger.info(`  - 强度倍数: ~${this.highSaltInjector.defaultMultiplier}x`);
+      this.logger.info(`  - 持续时长: ~${this.highSaltInjector.defaultDurationHours}小时`);
+      this.logger.info(`  - 影响范围: ~${this.highSaltInjector.affectedRatio * 100}% 设备`);
+    }
     this.logger.info('========================================');
 
     if (mode === 'fast') {
@@ -149,7 +168,11 @@ class ReportScheduler {
     this.logger.info('-' .repeat(50));
 
     try {
-      const saltData = this.saltGenerator.generateBatch(saltIonDevices, timestamp);
+      this.highSaltInjector.cleanupExpiredEvents(timestamp);
+
+      let saltData = this.saltGenerator.generateBatch(saltIonDevices, timestamp);
+      saltData = this.highSaltInjector.applyEventsBatch(saltData, timestamp);
+
       const envData = this.envGenerator.generateBatch(envDevices, timestamp);
       const allData = [...saltData, ...envData];
 
